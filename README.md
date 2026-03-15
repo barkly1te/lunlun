@@ -1,5 +1,7 @@
 # AgentScope Workspace
 
+**English** | [简体中文](./README.zh-CN.md)
+
 A local AgentScope-based assistant workspace with:
 
 - a Python `ReActAgent` runtime

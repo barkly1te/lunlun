@@ -1,6 +1,6 @@
 # 论论 AgentScope 工作区
 
-[English](./README.md)
+[English](./README.md) | **简体中文**
 
 一个面向本地部署的 AgentScope 助手工作区，包含：
 
