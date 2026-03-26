@@ -13,3 +13,6 @@ wheels/
 .env
 # chainlit
 .files
+
+# Generated images
+output/
