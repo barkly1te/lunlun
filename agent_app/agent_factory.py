@@ -13,6 +13,10 @@ from .settings import get_settings
 from .tools.registry import build_toolkit
 
 def load_sys_prompt() -> str:
+    """
+    读取并返回最基础的系统提示词。
+    注意：ReActAgent 会自动将 toolkit 中的 skill 提示词追加到此返回值之后。
+    """
     sys_prompt_path = Path(__file__).resolve().parent / "prompts" / "sys_prompt.md"
     return sys_prompt_path.read_text(encoding="utf-8").strip()
 

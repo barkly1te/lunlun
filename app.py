@@ -6,6 +6,8 @@ from agent_app.agent_factory import build_agent
 @cl.on_chat_start
 async def on_chat_start():
     agent = build_agent()
+    print("带有智能体技能的系统提示词:")
+    print(agent.sys_prompt)
     cl.user_session.set("agent", agent)
     await cl.Message(
         content="你好！我是 **论论**，你的智能助手。很高兴为你服务！"
