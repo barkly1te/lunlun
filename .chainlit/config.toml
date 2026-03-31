@@ -174,5 +174,11 @@ default_avatar_file_url = ""
 #     url = "https://github.com/Chainlit/chainlit/issues"
 #     target = "_blank" (default)  # Optional: "_self", "_parent", "_top".
 
+custom_js = "./public/clipboard_fallback.js"
+
 [meta]
 generated_by = "2.10.0"
+
+# 开启数据持久化，允许 Chainlit 保存对话历史并在侧边栏展示
+[persistence]
+enabled = true

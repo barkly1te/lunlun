@@ -16,3 +16,8 @@ wheels/
 
 # Generated images
 output/
+
+#database
+lunlun_history.db
+lunlun_history.db-shm
+lunlun_history.db-wal

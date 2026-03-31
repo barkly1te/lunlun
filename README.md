@@ -9,6 +9,8 @@
 - 以“论论”的身份和用户对话，默认风格偏学术、偏 reviewer / advisor。
 - 根据系统提示词，对计算机网络领域论文内容做审美分析和写作优化建议。
 - 在对话过程中调用工具。
+- 支持通过 Chainlit 侧边栏继续历史对话，并恢复 Agent 的完整运行状态（包含工具调用上下文）。
+- 当累计上下文超过约 `20w tokens` 时，自动裁剪最旧轮次，避免长对话无限增长。
 - 支持用户在 Chainlit 中上传图片，并将本地缓存路径注入给 Agent 使用。
 - 支持调用生图工具生成学术风格图片，并在前端直接预览生成结果。
 - 通过 Chainlit 展示“思考中”步骤和最终流式输出。
@@ -89,7 +91,17 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 
 启动后你会看到一个 Chainlit Web 界面，默认欢迎语是“你好！我是论论，你的智能助手”。
 
-### 5. 图片与图示能力说明
+### 5. 会话恢复与上下文裁剪
+
+当前版本已经接入了本地 SQLite 持久化的继续对话能力。需要知道的点如下：
+
+- `.chainlit/config.toml` 已开启 `persistence`，历史线程会显示在 Chainlit 侧边栏中
+- 每次对话结束后，运行中的 `AgentScope` 状态会序列化写入本地 `lunlun_history.db` 的 `agent_states` 表
+- 当你点击历史线程继续对话时，系统会优先恢复完整 `agent.state_dict()`，因此工具调用上下文也会被带回，而不只是表面文字
+- 如果某个线程创建于这套状态持久化逻辑接入之前，系统会回退为按 `user_message / assistant_message` 文本恢复
+- 当累计上下文超过约 `200000` tokens 时，系统会从最旧轮次开始裁剪，并尽量保证 `tool_use / tool_result` 配对不被截断
+
+### 6. 图片与图示能力说明
 
 如果你希望让智能体生成架构图、示意图，或者基于上传图片继续编辑，需要注意以下几点：
 
@@ -108,6 +120,7 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 | --- | --- |
 | `.chainlit/` | Chainlit 的本地配置目录，控制 UI 行为、功能开关和前端配置。 |
 | `.chainlit/translations/` | Chainlit 自带的多语言翻译文件。 |
+| `public/` | Chainlit 可直接提供的静态资源目录。当前放了一个浏览器复制功能的降级脚本。 |
 | `agent_app/` | 项目的核心 Python 代码目录，Agent 的构建、配置、提示词、技能和工具都放在这里。 |
 | `agent_app/agents/` | 预留给多智能体或 agent 相关实验的目录。当前只放了一个说明性占位文件。 |
 | `agent_app/memory/` | 预留给记忆或持久化能力扩展的目录。当前目录存在，但还没有正式接入到运行链路。 |
@@ -132,8 +145,9 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 
 | 文件 | 作用 |
 | --- | --- |
-| `app.py` | 当前主入口。负责接入 Chainlit，处理对话开始、接收消息、展示思考步骤和流式返回正文。 |
-| `agent_app/agent_factory.py` | 负责构建 `ReActAgent`，把模型、提示词、工具和内存组装起来。 |
+| `app.py` | 当前主入口。负责接入 Chainlit，处理新建对话、继续对话、上下文裁剪、图片附件注入、思考步骤展示和最终流式返回。 |
+| `database.py` | 本地 SQLite 初始化与 `agent_states` 持久化逻辑，负责保存和恢复完整 Agent 状态。 |
+| `agent_app/agent_factory.py` | 负责构建 `ReActAgent`，并配置上下文 token 计数与 `20w` 上限截断。 |
 | `agent_app/settings.py` | 负责读取 `.env` 并生成运行配置。 |
 | `agent_app/tools/registry.py` | 统一注册所有工具。 |
 | `agent_app/tools/code_tools.py` | 注册 Python 执行工具。 |
@@ -143,7 +157,8 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 | `agent_app/tools/image_gen_tool.py` | 提供图片生成与图片改写工具，调用外部图片接口并将结果落盘到 `output/`。 |
 | `agent_app/tools/search_paper_rag.py` | 提供论文片段检索工具，调用远程 Academic Retriever 服务返回顶会参考片段。 |
 | `agent_app/prompts/sys_prompt.md` | 定义“论论”的角色设定和输出要求。 |
-| `.chainlit/config.toml` | Chainlit 前端配置文件，当前已开启 LaTeX 渲染。 |
+| `.chainlit/config.toml` | Chainlit 前端配置文件，当前已开启 LaTeX 渲染与线程持久化。 |
+| `public/clipboard_fallback.js` | 给 HTTP 或受限浏览器环境下的复制操作提供降级支持。 |
 | `chainlit.md` | Chainlit 的欢迎页文案。当前已被忽略，后续如果不想展示欢迎页，可以清空它。 |
 | `entry.py` | 一个很轻量的本地测试入口，用来确认模型是否能正常响应。 |
 | `test.py` | 另一个早期测试脚本，直接构造 AgentScope Agent 做最小调用。 |
@@ -156,13 +171,16 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 
 项目的主流程大致如下：
 
-1. 用户在 Chainlit 页面发送消息
-2. `app.py` 从会话中取出已经创建好的 agent
-3. 如果消息里带有图片附件，`app.py` 会提取本地缓存路径并作为系统提示附加到用户输入
-4. agent 根据 `sys_prompt.md` 和用户输入生成响应
-5. 如有需要，agent 会通过 `toolkit` 调用工具，包括读取文件、生图、改图或检索顶会论文片段
-6. 如果最终回复里包含 `[GEN_IMAGE: 路径]` 标记，前端会将对应图片解析并渲染出来
-7. Chainlit 先展示“思考中”步骤，再把最终文本流式输出到页面
+1. 用户在 Chainlit 页面新建对话，或从侧边栏恢复历史线程
+2. `app.py` 为新线程构建 agent；如果是继续对话，则优先从本地 SQLite 的 `agent_states` 表恢复完整 `agent.state_dict()`
+3. 如果旧线程还没有完整状态快照，系统会回退为按 `user_message / assistant_message` 文本重建基础上下文
+4. 如果消息里带有图片附件，`app.py` 会提取本地缓存路径并作为系统提示附加到用户输入
+5. 在每轮请求前后，系统会估算当前上下文长度；超过约 `200000` tokens 时，会从最旧轮次开始裁剪，并尽量保留完整的工具调用配对
+6. agent 根据 `sys_prompt.md` 和用户输入生成响应
+7. 如有需要，agent 会通过 `toolkit` 调用工具，包括读取文件、生图、改图或检索顶会论文片段
+8. 对话结束后，当前 agent 的完整运行状态会再次写回本地 SQLite，供下次继续对话恢复
+9. 如果最终回复里包含 `[GEN_IMAGE: 路径]` 标记，前端会将对应图片解析并渲染出来
+10. Chainlit 先展示“思考中”步骤，再把最终文本流式输出到页面
 
 ## 当前项目状态
 
@@ -172,6 +190,7 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 
 - 当前默认角色强烈偏向“计算机网络论文写作优化助手”，不是完全通用的智能体。
 - 当前真正使用的前端入口是 `app.py`，不是 `main.py`。
+- 当前已经具备基于本地 SQLite 的会话继续能力，但这仍然属于工程化持久化状态，不等同于完善的长期记忆系统。
 - `agent_app/memory/` 和 `agent_app/agents/` 还属于预留空间，后续可以继续扩展。
 - `diagram_tool.py` 目前还是空文件，占位多于实际功能；实际图片链路已经转移到 `image_gen_tool.py` 与两个图示技能目录中。
 
@@ -188,7 +207,7 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 
 - 把依赖声明补完整，避免新环境安装歧义
 - 为工具增加更严格的错误处理
-- 给 `agent_app/memory/` 接入真正的持久化记忆
+- 把当前基于 `agent_states` 的会话恢复升级为更系统的长期记忆/摘要记忆机制
 - 把占位目录逐步替换成实际功能模块
 - 为图片生成链路补充更完整的异常处理、重试和结果缓存策略
 
