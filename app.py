@@ -7,9 +7,10 @@ import chainlit as cl
 from agentscope.message import Msg
 from chainlit.context import context as chainlit_context
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
-from chainlit.types import ThreadDict
+from chainlit.types import CommandDict, ThreadDict
 
 from agent_app.agent_factory import MAX_CONTEXT_TOKENS, build_agent
+from agent_app.skills.catalog import get_registered_skill, get_registered_skills
 from database import init_sqlite_db, load_agent_state, save_agent_state
 
 IMAGE_HINT_TEMPLATE = (
@@ -18,6 +19,18 @@ IMAGE_HINT_TEMPLATE = (
     'generate_image_tool 工具]'
 )
 GEN_IMAGE_PATTERN = re.compile(r'\[GEN_IMAGE:\s*(.*?)\]')
+SLASH_COMMAND_PATTERN = re.compile(
+    r'^\s*/(?P<name>[a-zA-Z0-9][a-zA-Z0-9-]*)(?P<rest>(?:\s.*)?)\Z',
+    re.DOTALL,
+)
+SLASH_COMMAND_ROUTE_TEMPLATE = (
+    '[系统路由：用户在本轮消息开头显式选择了 skill `/{skill_name}`。'
+    '你必须优先使用该同名 skill。请先调用 `read_registered_skill` 读取它的完整 SKILL.md，'
+    '再严格按照该 skill 的说明完成任务。只有当该 skill 文档明确要求借用其他 skill 时，'
+    '你才可以继续读取或使用其他 skill。目标 skill 目录：{skill_dir}。目标 SKILL.md：{skill_md_path}。]'
+    '\n\n用户的原始需求如下：\n{user_content}'
+)
+SKILL_COMMAND_ICON = 'sparkles'
 
 init_sqlite_db()
 
@@ -34,6 +47,109 @@ def header_auth_callback(headers) -> Optional[cl.User]:
 
 def _current_thread_id() -> Optional[str]:
     return getattr(chainlit_context.session, 'thread_id', None)
+
+
+def _build_skill_commands() -> list[CommandDict]:
+    return [
+        {
+            'id': skill.name,
+            'description': skill.description,
+            'icon': SKILL_COMMAND_ICON,
+        }
+        for skill in get_registered_skills()
+    ]
+
+
+async def _set_skill_commands() -> None:
+    await chainlit_context.emitter.set_commands(_build_skill_commands())
+
+
+def _format_available_skill_commands() -> str:
+    skills = get_registered_skills()
+    if not skills:
+        return '当前没有可用的 skill 命令。'
+
+    return '\n'.join(f'- /{skill.name}: {skill.description}' for skill in skills)
+
+
+def _collect_image_paths(message: cl.Message) -> list[str]:
+    image_paths = []
+    for element in message.elements or []:
+        mime = getattr(element, 'mime', '') or ''
+        if 'image' in mime and getattr(element, 'path', None):
+            image_paths.append(element.path)
+    return image_paths
+
+
+def _append_image_hint(content: str, image_paths: list[str]) -> str:
+    if image_paths:
+        return content + IMAGE_HINT_TEMPLATE.format(paths=', '.join(image_paths))
+    return content
+
+
+def _parse_slash_command(content: str) -> tuple[Optional[str], str, bool]:
+    stripped_content = content.lstrip()
+    match = SLASH_COMMAND_PATTERN.match(stripped_content)
+    if match is None:
+        return None, content, False
+
+    skill_name = match.group('name')
+    remaining_content = (match.group('rest') or '').lstrip()
+    return skill_name, remaining_content, True
+
+
+def _resolve_skill_selection(
+    raw_content: str,
+    selected_command: Optional[str] = None,
+) -> tuple[Optional[str], str, bool]:
+    if selected_command:
+        return selected_command, raw_content, True
+    return _parse_slash_command(raw_content)
+
+
+def _build_user_content(
+    raw_content: str,
+    image_paths: list[str],
+    selected_command: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    skill_name, remaining_content, has_slash_command = _resolve_skill_selection(
+        raw_content,
+        selected_command,
+    )
+    if not has_slash_command:
+        return None, _append_image_hint(raw_content, image_paths)
+
+    skill = get_registered_skill(skill_name or '')
+    if skill is None:
+        return (
+            f'未找到 skill `/{skill_name}`。\n\n可用命令：\n{_format_available_skill_commands()}',
+            None,
+        )
+
+    if not remaining_content.strip() and not image_paths:
+        return (
+            f'已选择 `/{skill.name}`。\n\n{skill.description}\n\n请继续输入具体需求。',
+            None,
+        )
+
+    user_content = _append_image_hint(remaining_content, image_paths).strip()
+    if not user_content:
+        user_content = '（用户未提供额外文本，仅通过 slash command 选择了该 skill。）'
+
+    return (
+        None,
+        SLASH_COMMAND_ROUTE_TEMPLATE.format(
+            skill_name=skill.name,
+            skill_dir=skill.skill_dir,
+            skill_md_path=skill.skill_md_path,
+            user_content=user_content,
+        ),
+    )
+
+
+def _restore_user_content(raw_content: str, selected_command: Optional[str] = None) -> str:
+    _, prepared_content = _build_user_content(raw_content, [], selected_command)
+    return prepared_content or raw_content
 
 
 async def _count_prompt_tokens(agent) -> int:
@@ -108,7 +224,13 @@ async def _restore_agent_from_steps(agent, thread: ThreadDict) -> None:
             continue
 
         if step.get('type') == 'user_message':
-            await agent.memory.add(Msg(name='user', content=output, role='user'))
+            await agent.memory.add(
+                Msg(
+                    name='user',
+                    content=_restore_user_content(output, step.get('command')),
+                    role='user',
+                )
+            )
         elif step.get('type') == 'assistant_message':
             await agent.memory.add(
                 Msg(name='assistant', content=output, role='assistant')
@@ -135,21 +257,6 @@ async def _build_agent_for_thread(thread_id: Optional[str], thread: Optional[Thr
         await _restore_agent_from_steps(agent, thread)
 
     return agent
-
-
-def _collect_user_content(message: cl.Message) -> str:
-    content = message.content or ''
-    image_paths = []
-
-    for element in message.elements or []:
-        mime = getattr(element, 'mime', '') or ''
-        if 'image' in mime and getattr(element, 'path', None):
-            image_paths.append(element.path)
-
-    if image_paths:
-        content += IMAGE_HINT_TEMPLATE.format(paths=', '.join(image_paths))
-
-    return content
 
 
 def _extract_response_parts(content_data: Any) -> tuple[str, str]:
@@ -191,6 +298,7 @@ def _extract_generated_images(final_text: str) -> tuple[list[cl.Image], str]:
 
 @cl.on_chat_start
 async def on_chat_start():
+    await _set_skill_commands()
     agent = build_agent()
     cl.user_session.set('agent', agent)
     await _persist_agent_state(agent)
@@ -199,6 +307,8 @@ async def on_chat_start():
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
+
+    await _set_skill_commands()
     thread_id = thread.get('id')
     agent = await _build_agent_for_thread(thread_id, thread)
     cl.user_session.set('agent', agent)
@@ -214,7 +324,16 @@ async def on_message(message: cl.Message):
 
     await _trim_agent_memory(agent)
 
-    user_msg = Msg(name='user', content=_collect_user_content(message), role='user')
+    error_message, user_content = _build_user_content(
+        message.content or '',
+        _collect_image_paths(message),
+        getattr(message, 'command', None),
+    )
+    if error_message:
+        await cl.Message(content=error_message).send()
+        return
+
+    user_msg = Msg(name='user', content=user_content or '', role='user')
 
     async with cl.Step(name='🤔 论论正在思考中...') as step:
         response = await agent(user_msg)

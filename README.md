@@ -25,6 +25,8 @@
 - `generate_image_tool`：根据文本提示词生成图片，或基于上传图片进行改写
 - `search_paper_rag`：调用远程 Academic Retriever 服务，检索顶会论文片段供写作对标与润色参考
 
+当前 agent 会自动扫描并注册 `agent_app/skills/` 下所有包含 `SKILL.md` 的技能目录。
+
 ## 技术栈
 
 - Python 3.12
@@ -109,6 +111,7 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 - 生成后的图片会保存到项目根目录的 `output/` 下，该目录默认已加入 `.gitignore`
 - 前端会自动识别回复中的 `[GEN_IMAGE: 路径]` 标记，并把对应图片直接渲染出来
 - `agent_app/skills/top-tier-architecture-diagram-expert/` 负责生成蓝图，`agent_app/skills/academic-diagram-generator/` 负责将蓝图转换为英文提示词并调用生图工具
+- `agent_app/skills/thesis-abstract-and-chapter-opening-editor/` 负责优化毕设摘要、英文 abstract、章节开头和小节引入段的逻辑结构
 
 ## 目录说明
 
@@ -128,6 +131,7 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 | `agent_app/skills/` | 存放技能定义。这里更适合放可复用的能力模块或任务型说明。 |
 | `agent_app/skills/top-tier-architecture-diagram-expert/` | 用于先生成学术架构图蓝图与视觉设计方案。 |
 | `agent_app/skills/academic-diagram-generator/` | 根据蓝图或用户描述组织英文提示词，并强制调用生图工具完成出图。 |
+| `agent_app/skills/thesis-abstract-and-chapter-opening-editor/` | 用于改写毕业论文摘要、英文 abstract、章节开头和过渡段，提升逻辑与承接。 |
 | `agent_app/tools/` | 工具实现目录，包含工具函数和统一注册逻辑。 |
 
 ### 本地运行时常见目录
@@ -149,7 +153,7 @@ chainlit run app.py -h --host 0.0.0.0 --port 8000
 | `database.py` | 本地 SQLite 初始化与 `agent_states` 持久化逻辑，负责保存和恢复完整 Agent 状态。 |
 | `agent_app/agent_factory.py` | 负责构建 `ReActAgent`，并配置上下文 token 计数与 `20w` 上限截断。 |
 | `agent_app/settings.py` | 负责读取 `.env` 并生成运行配置。 |
-| `agent_app/tools/registry.py` | 统一注册所有工具。 |
+| `agent_app/tools/registry.py` | 统一注册所有工具，并自动发现和注册本地技能。 |
 | `agent_app/tools/code_tools.py` | 注册 Python 执行工具。 |
 | `agent_app/tools/file_tools.py` | 提供本地文本文件读取工具，便于 Agent 读取技能说明等内容。 |
 | `agent_app/tools/get_current_time.py` | 提供当前时间工具。 |
