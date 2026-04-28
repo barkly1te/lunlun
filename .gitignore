@@ -16,6 +16,8 @@ wheels/
 
 # Generated images
 output/
+logs/*.json
+logs/*.log
 
 #database
 lunlun_history.db

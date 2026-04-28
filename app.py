@@ -1,10 +1,14 @@
 import asyncio
+import json
 import os
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import chainlit as cl
 from agentscope.message import Msg
+from agentscope.pipeline import stream_printing_messages
 from chainlit.context import context as chainlit_context
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.types import CommandDict, ThreadDict
@@ -14,9 +18,9 @@ from agent_app.skills.catalog import get_registered_skill, get_registered_skills
 from database import init_sqlite_db, load_agent_state, save_agent_state
 
 IMAGE_HINT_TEMPLATE = (
-    '\n\n[系统提示：用户上传了图片，系统已缓存至本地路径：{paths}。'
-    '如果用户的需求涉及改图或生图，请提取此路径作为 image_path 参数调用 '
-    'generate_image_tool 工具]'
+    '\n\n[系统提示：用户上传了图片。图片会作为原生多模态 image block 提供给你，同时'
+    '系统也已缓存本地路径：{paths}。如果你需要调用 generate_image_tool 做改图，请'
+    '从这些路径中提取合适的 image_path 参数。]'
 )
 GEN_IMAGE_PATTERN = re.compile(r'\[GEN_IMAGE:\s*(.*?)\]')
 SLASH_COMMAND_PATTERN = re.compile(
@@ -31,6 +35,7 @@ SLASH_COMMAND_ROUTE_TEMPLATE = (
     '\n\n用户的原始需求如下：\n{user_content}'
 )
 SKILL_COMMAND_ICON = 'sparkles'
+LOGS_DIR = Path(__file__).resolve().parent / 'logs'
 
 init_sqlite_db()
 
@@ -85,6 +90,31 @@ def _append_image_hint(content: str, image_paths: list[str]) -> str:
     if image_paths:
         return content + IMAGE_HINT_TEMPLATE.format(paths=', '.join(image_paths))
     return content
+
+
+def _build_user_msg_content(
+    text_content: str,
+    image_paths: list[str],
+) -> str | list[dict[str, Any]]:
+    if not image_paths:
+        return text_content
+
+    content_blocks: list[dict[str, Any]] = []
+    if text_content:
+        content_blocks.append({'type': 'text', 'text': text_content})
+
+    for image_path in image_paths:
+        content_blocks.append(
+            {
+                'type': 'image',
+                'source': {
+                    'type': 'url',
+                    'url': image_path,
+                },
+            }
+        )
+
+    return content_blocks
 
 
 def _parse_slash_command(content: str) -> tuple[Optional[str], str, bool]:
@@ -164,6 +194,35 @@ async def _count_prompt_tokens(agent) -> int:
         ],
     )
     return await token_counter.count(prompt, tools=agent.toolkit.get_json_schemas())
+
+
+def _sanitize_log_filename(value: str) -> str:
+    normalized = re.sub(r'[^a-zA-Z0-9._-]+', '-', value).strip('-')
+    return normalized or 'unknown'
+
+
+async def _write_formatted_prompt_log(agent, user_msg: Msg) -> None:
+    formatted_messages = await agent.formatter._format(
+        [
+            Msg('system', agent.sys_prompt, 'system'),
+            *await agent.memory.get_memory(),
+            user_msg,
+        ],
+    )
+    formatted_prompt = {
+        'messages': formatted_messages,
+        'tools': agent.toolkit.get_json_schemas(),
+    }
+
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    thread_id = _sanitize_log_filename(_current_thread_id() or 'no-thread')
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    log_path = LOGS_DIR / f'prompt-{thread_id}-{timestamp}.json'
+    log_path.write_text(
+        json.dumps(formatted_prompt, ensure_ascii=False, indent=2, default=str),
+        encoding='utf-8',
+    )
+    print(f'[Prompt Log] wrote formatted prompt to {log_path}')
 
 
 def _find_trim_boundary(memory_items) -> int:
@@ -281,6 +340,26 @@ def _extract_response_parts(content_data: Any) -> tuple[str, str]:
     return thinking_text, final_text
 
 
+def _has_tool_use_blocks(content_data: Any) -> bool:
+    if not isinstance(content_data, list):
+        return False
+
+    return any(
+        isinstance(block, dict) and block.get('type') == 'tool_use'
+        for block in content_data
+    )
+
+
+def _compute_stream_update(previous_text: str, current_text: str) -> tuple[str, bool]:
+    if current_text == previous_text:
+        return '', False
+
+    if current_text.startswith(previous_text):
+        return current_text[len(previous_text) :], False
+
+    return current_text, True
+
+
 def _extract_generated_images(final_text: str) -> tuple[list[cl.Image], str]:
     image_elements = []
     for image_path in GEN_IMAGE_PATTERN.findall(final_text):
@@ -294,6 +373,106 @@ def _extract_generated_images(final_text: str) -> tuple[list[cl.Image], str]:
         display_text = '图片已生成，请查看下方结果：'
 
     return image_elements, display_text
+
+
+async def _stream_agent_reply(agent, user_msg: Msg) -> tuple[Msg, Optional[cl.Message]]:
+    response_holder: dict[str, Msg] = {}
+    stream_state_by_id: dict[str, dict[str, Any]] = {}
+    draft_replies: dict[str, cl.Message] = {}
+    saw_thinking = False
+
+    queue_enabled = not getattr(agent, '_disable_msg_queue', True)
+    previous_queue = getattr(agent, 'msg_queue', None)
+    console_enabled = not getattr(agent, '_disable_console_output', False)
+
+    async def _invoke_agent() -> None:
+        response_holder['response'] = await agent(user_msg)
+
+    step = cl.Step(
+        name='🤔 思考过程',
+        type='llm',
+        default_open=True,
+        auto_collapse=True,
+    )
+
+    agent.set_console_output_enabled(False)
+    try:
+        async with step:
+            async for printed_msg, _ in stream_printing_messages(
+                [agent],
+                _invoke_agent(),
+            ):
+                msg_id = getattr(printed_msg, 'id', None) or f'stream-{len(stream_state_by_id)}'
+                state = stream_state_by_id.setdefault(
+                    msg_id,
+                    {
+                        'thinking': '',
+                        'text': '',
+                        'tool_use_seen': False,
+                    },
+                )
+
+                thinking_text, text_text = _extract_response_parts(printed_msg.content)
+
+                if thinking_text:
+                    thinking_update, replace_thinking = _compute_stream_update(
+                        state['thinking'],
+                        thinking_text,
+                    )
+                    if thinking_update or replace_thinking:
+                        await step.stream_token(
+                            thinking_text if replace_thinking else thinking_update,
+                            is_sequence=replace_thinking,
+                        )
+                    state['thinking'] = thinking_text
+                    saw_thinking = True
+
+                has_tool_use = _has_tool_use_blocks(printed_msg.content)
+                if has_tool_use:
+                    state['tool_use_seen'] = True
+                    draft_reply = draft_replies.pop(msg_id, None)
+                    if draft_reply is not None:
+                        await draft_reply.remove()
+
+                if text_text and not state['tool_use_seen']:
+                    draft_reply = draft_replies.get(msg_id)
+                    if draft_reply is None:
+                        draft_reply = await cl.Message(content='').send()
+                        draft_replies[msg_id] = draft_reply
+
+                    text_update, replace_text = _compute_stream_update(
+                        state['text'],
+                        text_text,
+                    )
+                    if text_update or replace_text:
+                        await draft_reply.stream_token(
+                            text_text if replace_text else text_update,
+                            is_sequence=replace_text,
+                        )
+                    state['text'] = text_text
+    finally:
+        if queue_enabled:
+            agent.set_msg_queue_enabled(True, previous_queue)
+        else:
+            agent.set_msg_queue_enabled(False)
+        agent.set_console_output_enabled(console_enabled)
+
+    if not saw_thinking:
+        await step.remove()
+
+    response = response_holder.get('response')
+    if response is None:
+        raise RuntimeError('Agent finished without producing a response.')
+
+    final_reply = None
+    final_reply_id = getattr(response, 'id', None)
+    if final_reply_id:
+        final_reply = draft_replies.pop(final_reply_id, None)
+
+    for stale_reply in draft_replies.values():
+        await stale_reply.remove()
+
+    return response, final_reply
 
 
 @cl.on_chat_start
@@ -324,31 +503,26 @@ async def on_message(message: cl.Message):
 
     await _trim_agent_memory(agent)
 
+    image_paths = _collect_image_paths(message)
     error_message, user_content = _build_user_content(
         message.content or '',
-        _collect_image_paths(message),
+        image_paths,
         getattr(message, 'command', None),
     )
     if error_message:
         await cl.Message(content=error_message).send()
         return
 
-    user_msg = Msg(name='user', content=user_content or '', role='user')
+    user_msg = Msg(
+        name='user',
+        content=_build_user_msg_content(user_content or '', image_paths),
+        role='user',
+    )
 
-    async with cl.Step(name='🤔 论论正在思考中...') as step:
-        response = await agent(user_msg)
-        thinking_text, final_text = _extract_response_parts(response.content)
+    await _write_formatted_prompt_log(agent, user_msg)
 
-        if thinking_text:
-            step.name = '🤔 论论的思考过程'
-            formatted_think = f'> _{thinking_text}_'
-            for index in range(0, len(formatted_think), 6):
-                await step.stream_token(formatted_think[index:index + 6])
-                await asyncio.sleep(0.01)
-        else:
-            step.name = '🤔 思考完毕'
-            step.content = '_无内部思考过程。_'
-            await step.update()
+    response, streamed_reply = await _stream_agent_reply(agent, user_msg)
+    _, final_text = _extract_response_parts(response.content)
 
     if not final_text:
         final_text = '（由于某些原因，没有生成正文内容）'
@@ -357,8 +531,11 @@ async def on_message(message: cl.Message):
     await _persist_agent_state(agent)
 
     image_elements, display_text = _extract_generated_images(final_text)
-    reply = cl.Message(content='', elements=image_elements)
-    for index in range(0, len(display_text), 6):
-        await reply.stream_token(display_text[index:index + 6])
-        await asyncio.sleep(0.02)
-    await reply.send()
+    reply = streamed_reply or await cl.Message(content='').send()
+    if streamed_reply is None:
+        for index in range(0, len(display_text), 6):
+            await reply.stream_token(display_text[index:index + 6])
+            await asyncio.sleep(0.02)
+    reply.content = display_text
+    reply.elements = image_elements
+    await reply.update()

@@ -1,0 +1,31 @@
+/* Command popover from the composer uses a fixed w-72 width in Chainlit.
+   Make it responsive to viewport size while keeping a reasonable desktop max. */
+[data-popover-content] {
+  width: min(36rem, calc(100vw - 1rem)) !important;
+  max-width: calc(100vw - 1rem) !important;
+  max-height: min(70vh, 32rem);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Let long command ids/descriptions wrap instead of stretching the panel. */
+[data-popover-content] [cmdk-item] {
+  align-items: flex-start;
+}
+
+[data-popover-content] [cmdk-item] > div {
+  min-width: 0;
+}
+
+[data-popover-content] [cmdk-item] > div > div {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (max-width: 640px) {
+  [data-popover-content] {
+    width: calc(100vw - 0.75rem) !important;
+    max-width: calc(100vw - 0.75rem) !important;
+    border-radius: 0.875rem;
+  }
+}

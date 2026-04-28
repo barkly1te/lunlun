@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from dotenv import load_dotenv
 
+DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -20,6 +22,6 @@ def get_settings() -> Settings:
 
     return Settings(
         api_key=api_key,
-        model_name=os.getenv("DASHSCOPE_MODEL", "qwen3.5-plus"),
-        base_url=os.getenv("DASHSCOPE_BASE_URL"),
+        model_name=os.getenv("DASHSCOPE_MODEL", "qwen3.6-plus"),
+        base_url=os.getenv("DASHSCOPE_BASE_URL") or DEFAULT_DASHSCOPE_BASE_URL,
     )
