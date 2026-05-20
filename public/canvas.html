@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lunlun Canvas</title>
+    <link rel="stylesheet" href="/public/canvas.css" />
+    <script>
+      window.MathJax = {
+        tex: { inlineMath: [['\\(', '\\)']], displayMath: [['$$', '$$']] },
+        svg: { fontCache: 'global' },
+      };
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+    <script defer src="/public/canvas.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <div class="brand-title">Lunlun Canvas</div>
+          <div class="brand-subtitle">论文文档工作台</div>
+        </div>
+        <nav class="top-actions" aria-label="Canvas 操作">
+          <a href="/" class="ghost-link">返回聊天</a>
+          <button id="new-doc" type="button">新建</button>
+          <label class="import-button">
+            导入 .tex / .docx
+            <input id="import-file" type="file" accept=".tex,.docx" />
+          </label>
+          <button id="save-doc" type="button" class="primary">保存</button>
+          <button id="delete-doc" type="button">删除文档</button>
+          <a id="export-tex" class="export-link disabled" href="#">导出 TeX</a>
+          <a id="export-docx" class="export-link disabled" href="#">导出 DOCX</a>
+        </nav>
+      </header>
+
+      <main class="workspace">
+        <aside class="document-list-panel">
+          <div class="panel-heading">
+            <span>文档</span>
+            <button id="refresh-docs" type="button">刷新</button>
+          </div>
+          <div id="document-list" class="document-list"></div>
+        </aside>
+
+        <section class="editor-shell">
+          <div class="editor-toolbar">
+            <div class="format-tools" aria-label="基础格式">
+              <button type="button" data-format="bold">B</button>
+              <button type="button" data-format="italic">I</button>
+              <button type="button" data-format="code">Code</button>
+              <button type="button" data-format="link">Link</button>
+            </div>
+            <div class="block-tools">
+              <select id="block-type">
+                <option value="paragraph">段落</option>
+                <option value="heading">标题</option>
+                <option value="ordered_list">有序列表</option>
+                <option value="unordered_list">无序列表</option>
+                <option value="blockquote">引用块</option>
+                <option value="code_block">代码块</option>
+                <option value="equation">公式</option>
+                <option value="citation">引用</option>
+                <option value="figure">图片</option>
+                <option value="table">表格</option>
+                <option value="raw_latex">Raw LaTeX</option>
+              </select>
+              <button id="add-block" type="button">新增块</button>
+              <button id="delete-block" type="button">删除块</button>
+            </div>
+          </div>
+          <div id="editor-empty" class="empty-state">选择一个文档，或导入 .tex / .docx。</div>
+          <div id="editor" class="block-editor" aria-label="Canvas 编辑区"></div>
+        </section>
+
+        <aside class="side-panel">
+          <section class="agent-panel">
+            <div class="panel-heading agent-heading">
+              <span>Canvas Agent</span>
+              <div class="agent-heading-actions">
+                <button id="open-versions" type="button">版本</button>
+                <button id="open-preview" type="button">预览</button>
+                <span id="selected-block-chip" class="chip">未选中</span>
+              </div>
+            </div>
+            <div class="selection-box">
+              <div class="mini-label">当前选区</div>
+              <div id="selection-preview"></div>
+            </div>
+            <div class="context-box">
+              <div class="mini-label">Agent 上下文</div>
+              <div id="context-summary" class="context-summary"></div>
+              <div id="context-list" class="context-list"></div>
+            </div>
+            <div id="agent-messages" class="agent-messages" aria-live="polite"></div>
+            <div id="pending-changes-bar" class="pending-changes-bar hidden">
+              <span id="pending-changes-count">0 条修改建议</span>
+              <div>
+                <button id="accept-all-changes" type="button">接受全部</button>
+                <button id="reject-all-changes" type="button">拒绝全部</button>
+              </div>
+            </div>
+            <form id="agent-form" class="agent-composer">
+              <div class="composer-wrap">
+                <textarea id="agent-input" rows="4" placeholder="输入 / 选择 skill，或直接说明修改要求"></textarea>
+                <div id="skill-suggestions" class="skill-suggestions hidden"></div>
+              </div>
+              <button id="send-agent" type="submit" class="primary">发送</button>
+            </form>
+          </section>
+
+          <section id="utility-panel" class="utility-panel hidden">
+            <div class="panel-heading">
+              <span id="utility-title">版本</span>
+              <button id="close-utility" type="button">关闭</button>
+            </div>
+            <div id="version-utility" class="utility-content">
+              <div class="utility-toolbar">
+                <button id="restore-prev" type="button">恢复上一版</button>
+              </div>
+              <div id="version-list" class="version-list"></div>
+            </div>
+            <div id="preview-utility" class="utility-content hidden">
+              <div class="utility-toolbar">
+                <button id="refresh-preview" type="button">刷新预览</button>
+              </div>
+              <article id="preview" class="paper-preview"></article>
+            </div>
+          </section>
+        </aside>
+      </main>
+
+      <div id="toast" class="toast" role="status"></div>
+    </div>
+  </body>
+</html>

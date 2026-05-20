@@ -19,6 +19,7 @@
 - 支持在 Chainlit 输入框中通过 slash command 选择 skill，例如 `/<skill-name>`。
 - 支持继续历史线程，并优先恢复完整 `agent.state_dict()`，而不是只恢复表面聊天文本。
 - 支持图片上传；图片会同时以原生多模态 block 和本地缓存路径提示的形式注入给模型。
+- 支持 `/canvas` 论文文档工作台：导入 `.tex` / `.docx`，文档删除、块级编辑与多选、右侧 Agent Chat、diff 修改建议、按需快速预览、版本恢复，并导出 `.tex` / `.docx`。
 - 如果工具返回 `[GEN_IMAGE: 路径]` 标记，前端会自动解析并把图片直接展示出来。
 - 在每轮模型调用前写出格式化后的 prompt 日志，便于调试。
 - 如果底层模型返回 `thinking` block，前端会实时展示思考过程；步骤结束后自动折叠，正文单独流式输出。
@@ -105,6 +106,15 @@ FASTAI_IMAGE_TIMEOUT_SECONDS=600
 chainlit run app.py -h --host 0.0.0.0 --port 8000
 ```
 
+Canvas 不需要单独启动，和主聊天页共用同一个服务：
+
+```text
+主页面:  http://127.0.0.1:8000
+Canvas:  http://127.0.0.1:8000/canvas
+```
+
+如果 `8000` 被占用，可以把命令里的 `--port 8000` 改成其它端口，例如 `8001`，对应访问 `/canvas` 即可。
+
 启动后你会看到 Chainlit 页面。欢迎语由 `app.py` 中的 `on_chat_start()` 发送，而不是依赖 `chainlit.md`。
 
 ### 5. 本地测试脚本
@@ -158,6 +168,14 @@ python test.py
   - `auto_collapse=True`
 - 也就是：思考开始时默认展开，步骤结束后自动折叠，用户仍可手动再次展开
 - 最终正文使用单独的 `cl.Message` 流式输出，不与思考内容混在一起
+
+### 7. Canvas 论文工作台
+
+- `/canvas` 是独立的论文长文档工作台，Canvas JSON 是导入后的主文档。
+- 支持上传 `.tex` / `.docx`，导入后转换为结构化 blocks；难解析的 LaTeX 会保存在 `raw_latex` block。
+- Canvas 数据保存在 SQLite 的 `canvas_documents`、`canvas_versions`、`canvas_assets`、`canvas_edit_events`、`canvas_conversations`、`canvas_messages` 表中。
+- Canvas 右侧是聊天式 Agent 面板，复用当前聊天页的同一个 AgentScope agent 实例、同一套 tools 和本地 skills；支持输入 `/` 选择 skill。调用时自动组装文本选区、单个或多个选中 block、邻近 block、当前 section 摘要、标题、大纲和 Canvas 对话历史，执行后回滚临时 Canvas turn，不把 Canvas 全文写入主聊天 agent memory。AI 修改以类似 Git diff 的 before/after 建议呈现，用户接受后才写入 Canvas 主文档并生成新版本；版本和预览通过右侧按钮按需打开。
+- 顶部导航和聊天消息 action 都可以进入 Canvas，助手长回复可以一键发送到 Canvas。
 
 ### 6. Prompt 日志
 
@@ -215,6 +233,8 @@ logs/prompt-<thread-id>-<timestamp>.json
 | `.chainlit/config.toml` | Chainlit UI 与持久化配置 |
 | `public/clipboard_compat.js` | 当前启用的复制兼容脚本 |
 | `public/chainlit-overrides.css` | 当前启用的 Chainlit 自定义样式 |
+| `public/canvas.html` | Canvas 工作台页面 |
+| `agent_app/canvas/` | Canvas 文档模型、导入、导出、AI 局部编辑和持久化 |
 
 ## 当前项目状态
 

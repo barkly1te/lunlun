@@ -175,6 +175,13 @@ default_avatar_file_url = ""
 #     url = "https://github.com/Chainlit/chainlit/issues"
 #     target = "_blank" (default)  # Optional: "_self", "_parent", "_top".
 
+[[UI.header_links]]
+    name = "Canvas"
+    display_name = "Canvas"
+    icon_url = "/public/canvas-icon.svg"
+    url = "/canvas"
+    target = "_self"
+
 [meta]
 generated_by = "2.10.0"
 

@@ -98,6 +98,86 @@ def init_sqlite_db():
             "updatedAt" TEXT,
             FOREIGN KEY ("threadId") REFERENCES threads("id") ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS canvas_documents (
+            "id" TEXT PRIMARY KEY,
+            "title" TEXT NOT NULL,
+            "document_json" TEXT NOT NULL,
+            "current_version_id" TEXT,
+            "source_type" TEXT,
+            "source_filename" TEXT,
+            "created_at" TEXT NOT NULL,
+            "updated_at" TEXT NOT NULL,
+            "deleted_at" TEXT
+        );
+        CREATE TABLE IF NOT EXISTS canvas_versions (
+            "id" TEXT PRIMARY KEY,
+            "document_id" TEXT NOT NULL,
+            "version_number" INTEGER NOT NULL,
+            "document_json" TEXT NOT NULL,
+            "source" TEXT NOT NULL,
+            "event_id" TEXT,
+            "created_at" TEXT NOT NULL,
+            FOREIGN KEY ("document_id") REFERENCES canvas_documents("id") ON DELETE CASCADE,
+            UNIQUE ("document_id", "version_number")
+        );
+        CREATE TABLE IF NOT EXISTS canvas_assets (
+            "id" TEXT PRIMARY KEY,
+            "document_id" TEXT NOT NULL,
+            "filename" TEXT NOT NULL,
+            "mime_type" TEXT NOT NULL,
+            "content" BLOB NOT NULL,
+            "metadata" TEXT,
+            "created_at" TEXT NOT NULL,
+            FOREIGN KEY ("document_id") REFERENCES canvas_documents("id") ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS canvas_edit_events (
+            "id" TEXT PRIMARY KEY,
+            "document_id" TEXT NOT NULL,
+            "version_id" TEXT,
+            "event_type" TEXT NOT NULL,
+            "block_id" TEXT,
+            "instruction" TEXT,
+            "before_json" TEXT,
+            "after_json" TEXT,
+            "metadata" TEXT,
+            "created_at" TEXT NOT NULL,
+            FOREIGN KEY ("document_id") REFERENCES canvas_documents("id") ON DELETE CASCADE,
+            FOREIGN KEY ("version_id") REFERENCES canvas_versions("id") ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS canvas_conversations (
+            "id" TEXT PRIMARY KEY,
+            "document_id" TEXT NOT NULL,
+            "thread_id" TEXT,
+            "title" TEXT,
+            "created_at" TEXT NOT NULL,
+            "updated_at" TEXT NOT NULL,
+            FOREIGN KEY ("document_id") REFERENCES canvas_documents("id") ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS canvas_messages (
+            "id" TEXT PRIMARY KEY,
+            "conversation_id" TEXT NOT NULL,
+            "document_id" TEXT NOT NULL,
+            "role" TEXT NOT NULL,
+            "content" TEXT NOT NULL,
+            "command" TEXT,
+            "selection_json" TEXT,
+            "response_json" TEXT,
+            "created_at" TEXT NOT NULL,
+            FOREIGN KEY ("conversation_id") REFERENCES canvas_conversations("id") ON DELETE CASCADE,
+            FOREIGN KEY ("document_id") REFERENCES canvas_documents("id") ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_canvas_documents_updated_at
+            ON canvas_documents ("updated_at");
+        CREATE INDEX IF NOT EXISTS idx_canvas_versions_document_id
+            ON canvas_versions ("document_id", "version_number");
+        CREATE INDEX IF NOT EXISTS idx_canvas_assets_document_id
+            ON canvas_assets ("document_id");
+        CREATE INDEX IF NOT EXISTS idx_canvas_edit_events_document_id
+            ON canvas_edit_events ("document_id", "created_at");
+        CREATE INDEX IF NOT EXISTS idx_canvas_conversations_document_id
+            ON canvas_conversations ("document_id", "updated_at");
+        CREATE INDEX IF NOT EXISTS idx_canvas_messages_conversation_id
+            ON canvas_messages ("conversation_id", "created_at");
         """
     )
     conn.commit()
