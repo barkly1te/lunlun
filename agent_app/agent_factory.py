@@ -9,7 +9,7 @@ from agentscope.token import CharTokenCounter, OpenAITokenCounter
 from .settings import get_settings
 from .tools.registry import build_toolkit
 
-MAX_CONTEXT_TOKENS = 200_000
+MAX_CONTEXT_TOKENS = 500_000
 
 
 def load_sys_prompt() -> str:
@@ -48,4 +48,10 @@ def build_agent() -> ReActAgent:
         formatter=formatter,
         toolkit=build_toolkit(),
         memory=InMemoryMemory(),
+        compression_config=ReActAgent.CompressionConfig(
+            enable=True,
+            agent_token_counter = CharTokenCounter(),
+            trigger_threshold=300000,
+            keep_recent=5
+            )
     )

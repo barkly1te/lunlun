@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import chainlit as cl
 from agentscope.message import Msg
@@ -23,6 +24,12 @@ IMAGE_HINT_TEMPLATE = (
     '从这些路径中提取合适的 image_path 参数。]'
 )
 GEN_IMAGE_PATTERN = re.compile(r'\[GEN_IMAGE:\s*(.*?)\]')
+IMAGE_HINT_PATTERN = re.compile(
+    r'\n*\[系统提示：用户上传了图片。图片会作为原生多模态 image block 提供给你，同时'
+    r'系统也已缓存本地路径：.*?如果你需要调用 generate_image_tool 做改图，请'
+    r'从这些路径中提取合适的 image_path 参数。]',
+    re.DOTALL,
+)
 SLASH_COMMAND_PATTERN = re.compile(
     r'^\s*/(?P<name>[a-zA-Z0-9][a-zA-Z0-9-]*)(?P<rest>(?:\s.*)?)\Z',
     re.DOTALL,
@@ -81,9 +88,17 @@ def _collect_image_paths(message: cl.Message) -> list[str]:
     image_paths = []
     for element in message.elements or []:
         mime = getattr(element, 'mime', '') or ''
-        if 'image' in mime and getattr(element, 'path', None):
-            image_paths.append(element.path)
+        path = getattr(element, 'path', None)
+        if 'image' in mime and path and os.path.exists(path):
+            image_paths.append(path)
     return image_paths
+
+
+def _strip_image_hint(content: str) -> str:
+    stripped_content = IMAGE_HINT_PATTERN.sub('', content)
+    if stripped_content == content:
+        return content
+    return stripped_content.strip()
 
 
 def _append_image_hint(content: str, image_paths: list[str]) -> str:
@@ -182,6 +197,94 @@ def _restore_user_content(raw_content: str, selected_command: Optional[str] = No
     return prepared_content or raw_content
 
 
+def _is_remote_or_data_url(url: str) -> bool:
+    scheme = urlparse(url).scheme.lower()
+    return scheme in {'http', 'https', 'data'}
+
+
+def _local_image_path_exists(url: str) -> bool:
+    raw_url = url.removeprefix('file://')
+    return os.path.exists(raw_url) and os.path.isfile(raw_url)
+
+
+def _should_replace_image_url(url: str, drop_local_images: bool) -> bool:
+    if _is_remote_or_data_url(url):
+        return False
+    if drop_local_images:
+        return True
+    return not _local_image_path_exists(url)
+
+
+def _sanitize_msg_content(msg: Msg, drop_local_images: bool = False) -> int:
+    sanitized_count = 0
+
+    if isinstance(msg.content, str):
+        stripped_content = _strip_image_hint(msg.content)
+        if stripped_content != msg.content:
+            msg.content = (
+                stripped_content
+                or '[历史上传图片已过期，图片内容不再作为本轮上下文提供。]'
+            )
+            sanitized_count += 1
+        return sanitized_count
+
+    if not isinstance(msg.content, list):
+        return sanitized_count
+
+    sanitized_blocks: list[dict[str, Any]] = []
+    for block in msg.content:
+        if not isinstance(block, dict):
+            sanitized_blocks.append(block)
+            continue
+
+        if block.get('type') == 'text':
+            text = block.get('text', '')
+            stripped_text = _strip_image_hint(text)
+            if stripped_text != text:
+                sanitized_count += 1
+            if stripped_text:
+                sanitized_blocks.append({**block, 'text': stripped_text})
+            continue
+
+        if block.get('type') == 'image':
+            source = block.get('source') or {}
+            image_url = source.get('url') if source.get('type') == 'url' else None
+            if image_url and _should_replace_image_url(image_url, drop_local_images):
+                sanitized_blocks.append(
+                    {
+                        'type': 'text',
+                        'text': '[历史上传图片已过期，图片内容不再作为本轮上下文提供。]',
+                    }
+                )
+                sanitized_count += 1
+                continue
+
+        sanitized_blocks.append(block)
+
+    msg.content = sanitized_blocks
+    return sanitized_count
+
+
+def _sanitize_agent_memory(agent, drop_local_images: bool = False) -> int:
+    memory = getattr(agent, 'memory', None)
+    if memory is None or not hasattr(memory, 'content'):
+        return 0
+
+    sanitized_count = 0
+    for item in memory.content:
+        msg = item[0] if isinstance(item, (list, tuple)) and item else item
+        if isinstance(msg, Msg):
+            sanitized_count += _sanitize_msg_content(msg, drop_local_images)
+
+    if sanitized_count:
+        print(
+            '[Memory Sanitize] sanitized '
+            f'{sanitized_count} stale or local image reference(s)'
+        )
+
+    return sanitized_count
+
+
 async def _count_prompt_tokens(agent) -> int:
     token_counter = getattr(agent.formatter, 'token_counter', None)
     if token_counter is None:
@@ -202,6 +305,7 @@ def _sanitize_log_filename(value: str) -> str:
 
 
 async def _write_formatted_prompt_log(agent, user_msg: Msg) -> None:
+    _sanitize_agent_memory(agent, drop_local_images=True)
     formatted_messages = await agent.formatter._format(
         [
             Msg('system', agent.sys_prompt, 'system'),
@@ -253,6 +357,8 @@ async def _trim_agent_memory(agent) -> None:
     if memory is None or not hasattr(memory, 'content'):
         return
 
+    _sanitize_agent_memory(agent, drop_local_images=True)
+
     while memory.content:
         token_count = await _count_prompt_tokens(agent)
         if token_count <= MAX_CONTEXT_TOKENS:
@@ -269,6 +375,7 @@ async def _persist_agent_state(agent) -> None:
     if not thread_id:
         return
 
+    _sanitize_agent_memory(agent, drop_local_images=True)
     await _trim_agent_memory(agent)
     await asyncio.to_thread(save_agent_state, thread_id, agent.state_dict())
 
@@ -295,6 +402,7 @@ async def _restore_agent_from_steps(agent, thread: ThreadDict) -> None:
                 Msg(name='assistant', content=output, role='assistant')
             )
 
+    _sanitize_agent_memory(agent, drop_local_images=True)
     await _trim_agent_memory(agent)
 
 
@@ -307,6 +415,7 @@ async def _build_agent_for_thread(thread_id: Optional[str], thread: Optional[Thr
     if state:
         try:
             agent.load_state_dict(state, strict=False)
+            _sanitize_agent_memory(agent, drop_local_images=True)
             await _trim_agent_memory(agent)
             return agent
         except Exception as exc:
@@ -501,6 +610,7 @@ async def on_message(message: cl.Message):
         agent = await _build_agent_for_thread(_current_thread_id())
         cl.user_session.set('agent', agent)
 
+    _sanitize_agent_memory(agent, drop_local_images=True)
     await _trim_agent_memory(agent)
 
     image_paths = _collect_image_paths(message)
